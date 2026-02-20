@@ -1,2 +1,3 @@
 # SparkSQL-Tutorials
 SparkSQL教程
+注：老言的DDL语句中用了USING ICEBERG，是因为老言的存储格式都是用的Iceberg格式，没有Iceberg环境的同学将USING ICEBERG批量删除即可，还要注意替换数据库的名称。
