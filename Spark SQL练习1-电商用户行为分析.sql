@@ -153,6 +153,7 @@ INSERT INTO dataspire_catalog.db_dev.fact_order_items VALUES
 -- 订单202502060001明细
 (202502060001, 5026, '化妆品', '美妆个护', '彩妆', 3, 250.00, 750.00);
 
+-- 计算每个用户的购买行为指标（仅统计paid状态）
 SELECT
     t.user_id                     AS user_id -- 用户id
   , u.user_name                   AS user_name -- 用户名
@@ -179,7 +180,7 @@ LIMIT 10
 ;
 
 
-
+-- 识别连续购买行为
 SELECT
     tab3.user_id            AS user_id -- 用户id
   , tab3.user_name          AS user_name -- 用户名
@@ -229,6 +230,7 @@ ORDER BY
 LIMIT 10
 ;
 
+-- 计算各商品一级二级类目的销售指标
 SELECT
     i.category                   AS category -- 一级类目
   , i.sub_category               AS sub_category -- 二级类目
@@ -256,6 +258,7 @@ ORDER BY
 LIMIT 10
 ;
 
+-- 计算用户品类偏好
 WITH tab AS
 (
 SELECT
@@ -301,6 +304,7 @@ LIMIT 10
 ;
 
 
+-- 计算品类复购率
 SELECT
     i.category                AS category -- 一级类目
   , i.sub_category            AS sub_category -- 二级类目
