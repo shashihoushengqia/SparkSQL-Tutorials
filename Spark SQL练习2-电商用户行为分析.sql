@@ -1,4 +1,3 @@
-DROP TABLE IF EXISTS dataspire_catalog.db_dev.fact_user_behavior PURGE;
 CREATE TABLE IF NOT EXISTS dataspire_catalog.db_dev.fact_user_behavior
 (
     user_id          STRING COMMENT '用户ID',
@@ -186,3 +185,214 @@ INSERT INTO dataspire_catalog.db_dev.fact_user_behavior VALUES
 (10008, '2026-02-05', '2026-02-05 10:00:00', 'view', 5015, '手机数码', 105, 'web', 'search'),
 (10008, '2026-02-05', '2026-02-05 10:05:00', 'favorite', 5015, '手机数码', 0, 'web', 'detail'),
 (10008, '2026-02-05', '2026-02-05 10:10:00', 'buy', 5015, '手机数码', 0, 'web', 'detail');
+
+
+
+-- 计算用户活跃度趋势指标（以2026-02-19为基准）
+SELECT
+    t.user_id                       AS user_id
+  , u.user_name                     AS user_name
+  , COUNT(DISTINCT t.behavior_date) AS active_days
+  , ROUND(COUNT(DISTINCT IF(t.behavior_date >= DATE_SUB('2026-02-19', 7),
+                            t.behavior_date, NULL)) / COUNT(DISTINCT IF(
+        t.behavior_date < DATE_SUB('2026-02-19', 7), t.behavior_date, NULL)) *
+          100, 2)                   AS active_days_change_rate
+  , CASE
+        WHEN COUNT(DISTINCT IF(t.behavior_date >= DATE_SUB('2026-02-19', 7),
+                               t.behavior_date, NULL)) >= 4 THEN '活跃用户'
+        WHEN COUNT(DISTINCT IF(t.behavior_date >= DATE_SUB('2026-02-19', 7),
+                               t.behavior_date, NULL)) BETWEEN 0 AND 3
+            THEN '普通用户'
+        WHEN COUNT(DISTINCT IF(t.behavior_date >= DATE_SUB('2026-02-19', 7),
+                               t.behavior_date, NULL)) = 0 AND
+             COUNT(DISTINCT IF(t.behavior_date >= DATE_SUB('2026-02-19', 7),
+                               t.behavior_date, NULL)) > 0 THEN '沉默用户'
+        WHEN COUNT(DISTINCT t.behavior_date) = 0 THEN '流失用户'
+        END                         AS user_type
+FROM
+    dataspire_catalog.db_dev.fact_user_behavior t
+    LEFT JOIN dataspire_catalog.db_dev.dim_users u
+              ON t.user_id = u.user_id
+WHERE
+    1 = 1 AND t.behavior_date >= DATE_SUB('2026-02-19', 30)
+GROUP BY
+    t.user_id, u.user_name
+ORDER BY
+    active_days DESC, user_id
+LIMIT 10
+;
+
+
+-- 构建用户价值分层模型（以2026-02-19为基准）
+WITH tab AS
+(
+SELECT
+    t.user_id                                 AS user_id
+  , u.user_name                               AS user_name
+  , DATEDIFF('2025-02-19', MAX(t.order_date)) AS date_diff
+  , COUNT(DISTINCT t.order_id)                AS order_cnt
+  , SUM(i.item_amount)                        AS item_amt
+FROM
+    dataspire_catalog.db_dev.fact_orders t
+    LEFT JOIN dataspire_catalog.db_dev.fact_order_items i
+              ON t.order_id = i.order_id
+    LEFT JOIN dataspire_catalog.db_dev.dim_users u
+              ON t.user_id = u.user_id
+WHERE
+    1 = 1 AND t.status = 'paid'
+GROUP BY
+    t.user_id, u.user_name
+),
+tab1 AS
+(
+SELECT
+    tab.user_id   AS user_id
+  , tab.user_name AS user_name
+  , CASE
+        WHEN PERCENT_RANK() OVER (ORDER BY date_diff) <= 0.2 THEN 5
+        WHEN PERCENT_RANK() OVER (ORDER BY date_diff) BETWEEN 0.2 AND 0.4 THEN 4
+        WHEN PERCENT_RANK() OVER (ORDER BY date_diff) BETWEEN 0.4 AND 0.6 THEN 3
+        WHEN PERCENT_RANK() OVER (ORDER BY date_diff) BETWEEN 0.6 AND 0.8 THEN 2
+        ELSE 1
+        END       AS date_diff_rank
+  , CASE
+        WHEN PERCENT_RANK() OVER (ORDER BY order_cnt DESC) <= 0.2 THEN 5
+        WHEN PERCENT_RANK() OVER (ORDER BY order_cnt DESC) BETWEEN 0.2 AND 0.4
+            THEN 4
+        WHEN PERCENT_RANK() OVER (ORDER BY order_cnt DESC) BETWEEN 0.4 AND 0.6
+            THEN 3
+        WHEN PERCENT_RANK() OVER (ORDER BY order_cnt DESC) BETWEEN 0.6 AND 0.8
+            THEN 2
+        ELSE 1
+        END       AS order_cnt_rank
+  , CASE
+        WHEN PERCENT_RANK() OVER (ORDER BY item_amt DESC) <= 0.2 THEN 5
+        WHEN PERCENT_RANK() OVER (ORDER BY item_amt DESC) BETWEEN 0.2 AND 0.4
+            THEN 4
+        WHEN PERCENT_RANK() OVER (ORDER BY item_amt DESC) BETWEEN 0.4 AND 0.6
+            THEN 3
+        WHEN PERCENT_RANK() OVER (ORDER BY item_amt DESC) BETWEEN 0.6 AND 0.8
+            THEN 2
+        ELSE 1
+        END       AS item_amt_rank
+FROM
+    tab
+WHERE
+    1 = 1
+)
+SELECT
+    tab1.user_id                       AS user_id
+  , tab1.user_name                     AS user_name
+  , ROUND(tab1.date_diff_rank * 0.3 + tab1.order_cnt_rank * 0.3 +
+          tab1.item_amt_rank * 0.4, 2) AS final_rank
+  , CASE
+        WHEN PERCENT_RANK() OVER (ORDER BY tab1.date_diff_rank * 0.3 +
+                                           tab1.order_cnt_rank * 0.3 +
+                                           tab1.item_amt_rank * 0.4 DESC) <= 0.2
+            THEN '高价值用户'
+        WHEN PERCENT_RANK() OVER (ORDER BY tab1.date_diff_rank * 0.3 +
+                                           tab1.order_cnt_rank * 0.3 +
+                                           tab1.item_amt_rank *
+                                           0.4 DESC) BETWEEN 0.2 AND 0.5
+            THEN '潜力用户'
+        WHEN PERCENT_RANK() OVER (ORDER BY tab1.date_diff_rank * 0.3 +
+                                           tab1.order_cnt_rank * 0.3 +
+                                           tab1.item_amt_rank *
+                                           0.4 DESC) BETWEEN 0.5 AND 0.8
+            THEN '一般用户'
+        WHEN PERCENT_RANK() OVER (ORDER BY tab1.date_diff_rank * 0.3 +
+                                           tab1.order_cnt_rank * 0.3 +
+                                           tab1.item_amt_rank *
+                                           0.4 DESC) BETWEEN 0.8 AND 1
+            THEN '低价值用户'
+        ELSE '低价值用户'
+        END
+FROM
+    tab1
+WHERE
+    1 = 1
+ORDER BY
+    final_rank DESC, tab1.user_id
+;
+
+
+-- 分析用户流失风险特征
+WITH tab AS
+(
+SELECT
+    t.user_id                        AS user_id -- 用户id
+  , u.user_name                      AS user_name -- 用户名
+  , t.category                       AS category -- 商品一级类目
+  , IF(COUNT(DISTINCT IF(t.behavior_date >= DATE_SUB('2026-02-19', 30),
+                         t.duration_seconds, NULL)) = 0, 0,
+       SUM(IF(t.behavior_date >= DATE_SUB('2026-02-19', 30), t.duration_seconds,
+              0)) / COUNT(DISTINCT
+                          IF(t.behavior_date >= DATE_SUB('2026-02-19', 30),
+                             t.duration_seconds,
+                             NULL))) AS avg_dur_seconds_obs -- 观察期平均每日浏览时长
+  , IF(COUNT(DISTINCT IF(t.behavior_date < DATE_SUB('2026-02-19', 30),
+                         t.duration_seconds, NULL)) = 0, 0,
+       SUM(IF(t.behavior_date < DATE_SUB('2026-02-19', 30), t.duration_seconds,
+              0)) / COUNT(DISTINCT
+                          IF(t.behavior_date < DATE_SUB('2026-02-19', 30),
+                             t.duration_seconds,
+                             NULL))) AS avg_dur_seconds_bench -- 基期期平均每日浏览时长
+  , COUNT(1)                         AS view_cnt -- 浏览次数
+FROM
+    dataspire_catalog.db_dev.fact_user_behavior t
+    LEFT JOIN dataspire_catalog.db_dev.dim_users u
+              ON t.user_id = u.user_id
+WHERE
+    1 = 1 AND t.behavior_date >= DATE_SUB('2026-02-19', 60)
+GROUP BY
+    t.user_id, u.user_name, t.category
+HAVING
+    -- 观察期活跃天数 < 基准期活跃天数 * 0.5
+    IF(COUNT(DISTINCT IF(
+            t.behavior_type IN ('view', 'cart', 'favorite', 'buy') AND
+            t.behavior_date >= DATE_SUB('2026-02-19', 30), t.behavior_date,
+            NULL))
+           < COUNT(DISTINCT IF(
+                t.behavior_type IN ('view', 'cart', 'favorite', 'buy') AND
+                t.behavior_date < DATE_SUB('2026-02-19', 30), t.behavior_date,
+                NULL)) * 0.5, 1, 0) = 1
+),
+tab1 AS
+(
+SELECT
+     tab.user_id                AS user_id -- 用户id
+   , tab.user_name              AS user_name -- 用户名
+   , tab.category               AS category -- 商品一级类目
+   , ROW_NUMBER() OVER (PARTITION BY tab.user_id
+        ORDER BY view_cnt DESC) AS order_rank -- 排序
+   , tab.avg_dur_seconds_obs    AS avg_dur_seconds_obs -- 观察期平均每日浏览时长
+   , tab.avg_dur_seconds_bench  AS avg_dur_seconds_bench -- 基期期平均每日浏览时长
+FROM
+    tab
+WHERE
+    1 = 1
+)
+SELECT
+    tab1.user_id                               AS user_id -- 用户id
+  , tab1.user_name                             AS user_name -- 用户名
+  , tab1.category                              AS category -- 用户浏览次数最多的 category
+  , ROUND((tab1.avg_dur_seconds_bench - tab1.avg_dur_seconds_obs) /
+          tab1.avg_dur_seconds_bench * 100,
+          2)                                   AS avg_dur_seconds_diff -- 平均浏览时长变化率
+FROM
+    tab1
+        -- 过滤掉最近30天内有消费的用户
+    INNER JOIN (SELECT DISTINCT
+                    t.user_id AS user_id
+                FROM
+                    dataspire_catalog.db_dev.fact_orders t
+                WHERE
+                    1 = 1 AND t.order_date < DATE_SUB('2026-02-19', 30)) o
+               ON tab1.user_id = o.user_id
+WHERE
+    -- 取浏览次数最多的一级类目
+    1 = 1 AND tab1.order_rank = 1
+ORDER BY
+    avg_dur_seconds_diff DESC, user_id
+LIMIT 10
+;
